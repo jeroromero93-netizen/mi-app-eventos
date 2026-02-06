@@ -41,12 +41,21 @@ export async function POST(request: Request) {
     // Handle both SendGrid Inbound Parse (multipart/form-data) and JSON (test mode)
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
-      emailContent =
-        (formData.get("text") as string) ||
-        (formData.get("html") as string) ||
-        "";
+      // SendGrid sends: text, html, subject, from, to, envelope, etc.
+      const textBody = (formData.get("text") as string) || "";
+      const htmlBody = (formData.get("html") as string) || "";
+      // Prefer plain text, fall back to HTML
+      emailContent = textBody || htmlBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
       subject = (formData.get("subject") as string) || "";
       fromEmail = (formData.get("from") as string) || "";
+
+      // Log for debugging (remove after testing)
+      console.log("[v0] SendGrid inbound received:", {
+        from: fromEmail,
+        subject,
+        textLength: textBody.length,
+        htmlLength: htmlBody.length,
+      });
     } else {
       const body = await request.json();
       emailContent = body.content || body.text || "";
