@@ -1,34 +1,5 @@
-import { generateText, Output } from "ai";
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
-import { z } from "zod";
-
-const eventSchema = z.object({
-  title: z.string().describe("Event title"),
-  date: z
-    .string()
-    .describe("Event date in YYYY-MM-DD format. If year is not specified, assume 2026."),
-  time: z.string().nullable().describe("Event time in HH:MM format, or null if not found"),
-  venue: z.string().nullable().describe("Venue or location name, or null if not found"),
-  description: z
-    .string()
-    .nullable()
-    .describe("Brief description of the event in Spanish, max 200 chars"),
-  category: z
-    .string()
-    .nullable()
-    .describe(
-      "Event category: one of 'musica', 'exposicion', 'cine', 'teatro', 'charla', 'fiesta', 'otro'"
-    ),
-  url: z.string().nullable().describe("URL related to the event, or null if not found"),
-});
-
-const eventsOutputSchema = z.object({
-  events: z.array(eventSchema).describe("Array of extracted events. Can be 1 or more."),
-  summary: z
-    .string()
-    .describe("Brief summary of what was extracted, in Spanish"),
-});
 
 export async function POST(request: Request) {
   try {
@@ -41,21 +12,16 @@ export async function POST(request: Request) {
     // Handle both SendGrid Inbound Parse (multipart/form-data) and JSON (test mode)
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
-      // SendGrid sends: text, html, subject, from, to, envelope, etc.
       const textBody = (formData.get("text") as string) || "";
       const htmlBody = (formData.get("html") as string) || "";
-      // Prefer plain text, fall back to HTML
-      emailContent = textBody || htmlBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      emailContent =
+        textBody ||
+        htmlBody
+          .replace(/<[^>]*>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
       subject = (formData.get("subject") as string) || "";
       fromEmail = (formData.get("from") as string) || "";
-
-      // Log for debugging (remove after testing)
-      console.log("[v0] SendGrid inbound received:", {
-        from: fromEmail,
-        subject,
-        textLength: textBody.length,
-        htmlLength: htmlBody.length,
-      });
     } else {
       const body = await request.json();
       emailContent = body.content || body.text || "";
@@ -70,35 +36,81 @@ export async function POST(request: Request) {
       );
     }
 
-    // Use AI SDK 6 with structured output to extract event data
-    const { output } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
-      output: Output.object({ schema: eventsOutputSchema }),
-      prompt: `You are an expert event data extractor for a cultural events agenda in Madrid, Spain.
+    // Call OpenAI-compatible API directly via fetch (no SDK needed)
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "AI API key not configured" },
+        { status: 500 }
+      );
+    }
 
-Analyze the following email/text and extract ALL cultural events mentioned. For each event, extract:
-- title: The name of the event
-- date: In YYYY-MM-DD format (if only day/month given, assume year 2026)
-- time: In HH:MM format if available
-- venue: The location/venue name
-- description: A brief description in Spanish (max 200 chars)
-- category: One of: musica, exposicion, cine, teatro, charla, fiesta, otro
-- url: Any URL mentioned for the event
-
-If the subject line provides context, use it.
-
-Subject: ${subject}
-From: ${fromEmail}
-
-Email content:
-${emailContent}`,
+    const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert event data extractor for a cultural events agenda in Madrid, Spain.
+Extract ALL cultural events from the given text and return a JSON object with this exact structure:
+{
+  "events": [
+    {
+      "title": "Event name",
+      "date": "YYYY-MM-DD",
+      "time": "HH:MM or null",
+      "venue": "Venue name or null",
+      "description": "Brief description in Spanish, max 200 chars, or null",
+      "category": "one of: musica, exposicion, cine, teatro, charla, fiesta, otro",
+      "url": "URL or null"
+    }
+  ],
+  "summary": "Brief summary in Spanish of what was extracted"
+}
+If year is not specified, assume 2026. Always respond with valid JSON only.`,
+          },
+          {
+            role: "user",
+            content: `Subject: ${subject}\nFrom: ${fromEmail}\n\nEmail content:\n${emailContent}`,
+          },
+        ],
+      }),
     });
 
-    if (!output || !output.events || output.events.length === 0) {
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      console.error("AI API error:", errorText);
+      return NextResponse.json(
+        { error: "AI processing failed", details: `API returned ${aiResponse.status}` },
+        { status: 502 }
+      );
+    }
+
+    const aiData = await aiResponse.json();
+    const rawContent = aiData.choices?.[0]?.message?.content || "{}";
+
+    let parsed: { events?: Array<Record<string, string | null>>; summary?: string };
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch {
+      return NextResponse.json(
+        { error: "Failed to parse AI response", details: rawContent },
+        { status: 500 }
+      );
+    }
+
+    if (!parsed.events || parsed.events.length === 0) {
       return NextResponse.json(
         {
           error: "No events could be extracted from the content",
-          summary: output?.summary || "No se pudieron extraer eventos del contenido.",
+          summary: parsed.summary || "No se pudieron extraer eventos del contenido.",
         },
         { status: 422 }
       );
@@ -108,17 +120,17 @@ ${emailContent}`,
     const supabase = await createClient();
     const storedEvents = [];
 
-    for (const event of output.events) {
+    for (const event of parsed.events) {
       const eventData = {
         id: crypto.randomUUID(),
-        title: event.title,
-        date: event.date,
-        time: event.time,
-        venue: event.venue,
-        description: event.description,
-        category: event.category,
-        url: event.url,
-        status: "interested" as const,
+        title: event.title || "Evento sin titulo",
+        date: event.date || new Date().toISOString().split("T")[0],
+        time: event.time || null,
+        venue: event.venue || null,
+        description: event.description || null,
+        category: event.category || "otro",
+        url: event.url || null,
+        status: "interested",
       };
 
       const { data, error } = await supabase
@@ -136,8 +148,8 @@ ${emailContent}`,
 
     return NextResponse.json({
       success: true,
-      summary: output.summary,
-      eventsExtracted: output.events.length,
+      summary: parsed.summary || "Eventos extraidos correctamente.",
+      eventsExtracted: parsed.events.length,
       eventsStored: storedEvents.length,
       events: storedEvents,
     });
