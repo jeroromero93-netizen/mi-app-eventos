@@ -2,7 +2,8 @@
 
 import { useState, useCallback } from "react";
 import useSWR from "swr";
-import { Plus } from "lucide-react";
+import { Plus, Mail } from "lucide-react";
+import Link from "next/link";
 import { EventCard } from "@/components/event-card";
 import { EmailInfoModal } from "@/components/email-info-modal";
 import { EmptyState } from "@/components/empty-state";
@@ -124,13 +125,22 @@ export function EventsPage() {
             <h1 className="text-2xl font-bold text-card-foreground">
               Agenda Cultural Madrid
             </h1>
-            <button
-              onClick={() => setShowEmailInfo(!showEmailInfo)}
-              className="rounded-full p-2 text-muted-foreground hover:bg-muted"
-              aria-label="Agregar evento"
-            >
-              <Plus className="h-6 w-6" />
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/test-email"
+                className="flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/20"
+              >
+                <Mail className="h-4 w-4" />
+                <span className="sr-only sm:not-sr-only">Test IA</span>
+              </Link>
+              <button
+                onClick={() => setShowEmailInfo(!showEmailInfo)}
+                className="rounded-full p-2 text-muted-foreground hover:bg-muted"
+                aria-label="Agregar evento"
+              >
+                <Plus className="h-6 w-6" />
+              </button>
+            </div>
           </div>
 
           {/* View tabs */}
